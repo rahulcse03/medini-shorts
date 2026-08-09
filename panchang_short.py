@@ -201,10 +201,14 @@ SAMPLE = {
 
 
 def api_get(when: str | None, lat: float, lon: float) -> dict:
+    # anchor=instant: evaluate at exactly the instant we pass. This renderer does
+    # its own sunrise anchoring (see fetch()) and its tithi_end() solver probes
+    # specific instants, so it needs the raw at-instant evaluation rather than the
+    # API's default sunrise anchoring.
     if when:
-        url = f"{API_BASE}/api/v1/panchang?date={when}&lat={lat}&lon={lon}"
+        url = f"{API_BASE}/api/v1/panchang?date={when}&lat={lat}&lon={lon}&anchor=instant"
     else:
-        url = f"{API_BASE}/api/v1/panchang/today?lat={lat}&lon={lon}"
+        url = f"{API_BASE}/api/v1/panchang/today?lat={lat}&lon={lon}&anchor=instant"
     req = urllib.request.Request(url, headers={"User-Agent": "medini-shorts/1.0"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
