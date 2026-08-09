@@ -1,8 +1,20 @@
 # Medini Jyotish — Daily Shorts Pipeline
 
-**Status:** design spec, v1
-**Date:** 2026-08-08
+**Status:** v2 — YouTube English shipped, Instagram pending App Review
+**Updated:** 2026-08-09
 **Owner:** Rahul
+
+> Start at `README.md` for current state and design rationale.
+> `YOUTUBE_SETUP.md` has the operational commands.
+> `META_SETUP_CHECKLIST.md` has the Instagram approval path.
+>
+> This document is the architecture and the parts not yet built.
+
+**Shipped:** renderer, Devanagari name table, English speech respellings,
+sunrise anchoring, tithi end-time solver, YouTube upload + in-place update,
+channel guard, location labelling.
+**Not built:** GitHub Actions cron (§5), Instagram publish (§7), Medini gochar
+track (§8), Hindi/Telugu channels (§4).
 
 ---
 
@@ -55,12 +67,21 @@ worker cannot absorb. Run languages sequentially in one job, or stagger by 90s.
 
 ### 3.1 Data
 
-Source: `GET /api/v1/panchang?date=…&lat=…&lon=…` (or `/today`).
+Source: `GET /api/v1/panchang?date=…&lat=…&lon=…`. The exact payload shape is
+documented in `README.md` — it is not guessable, and getting it wrong cost a
+debugging round.
 
-The renderer's `dig()` helper tolerates field renames — it tries dotted paths
-first, then falls back to a recursive key search. This matters because the
-panchang payload has been reshaped across engine versions and a silent
-`KeyError` at 5:30 AM is a missed post.
+Two calls per render, sequential: one to learn today's sunrise, one to evaluate
+**at sunrise + 2 min**. The API evaluates at whatever instant it is handed, and
+a day's panchang is conventionally the values prevailing at local sunrise —
+querying at run time announced Dwadashi on a day whose tithi was Ekadashi.
+Add 2–4 more calls if the tithi end-time solve runs (`--no-tithi-end` skips it).
+
+The renderer's `dig()` and `field()` helpers tolerate renames — dotted paths
+first, then a recursive key search. `check()` then asserts all thirteen values
+are non-empty and **aborts before encoding** if any are missing, naming them.
+A silent `KeyError` at 5:30 AM is a missed post; a blank Rahu Kalam is worse
+than a missed post.
 
 **⚠️ Timezone bug to fix.** The SSR panchang page currently prints raw UTC while
 labelling the section "displayed in your local timezone". For 2026-08-08 Delhi it
@@ -75,15 +96,27 @@ whole platform rests on, and it is the kind of error a competitor screenshots.
 
 ### 3.2 Scenes
 
-Five scenes, ~22–30s total. Ordered for retention, not for completeness:
+Six scenes, ~40s with narration. Ordered for retention, not for completeness:
 
 | # | Scene | Content | Why |
 |---|-------|---------|-----|
-| 1 | Hook | Date, vara, **tithi in large type** | Tithi is the single most-searched value; lead with the answer |
-| 2 | Limbs | Nakshatra, yoga, karana, sunrise, sunset | The substance |
-| 3 | Shubh | Abhijit Muhurat | Actionable — "when can I start something" |
-| 4 | Avoid | Rahu Kalam, Gulika, Yamaghanda | Highest-intent query in the whole category |
-| 5 | CTA | Domain + "free & ad-free" | Ad-free is the differentiator; say it |
+| 1 | Rahu hook | **"Don't Start Anything" + Rahu Kalam window** | Shorts is swipe-or-stay in 2s. A specific window the viewer doesn't know beats a date stamp |
+| 2 | Tithi | Date, vara, tithi, "until HH:MM" | The most-searched value, with the rollover an almanac would print |
+| 3 | Limbs | Nakshatra, yoga, karana, sunrise, sunset | The substance |
+| 4 | Shubh | Abhijit Muhurat | Actionable — "when can I start something" |
+| 5 | Avoid | Rahu Kalam, Gulika, Yamaghanda | Repeating Rahu Kalam aids recall |
+| 6 | CTA | Location caveat → domain | See "location" below |
+
+**Location labelling.** Rahu Kalam, Gulika, Yamaghanda and Abhijit are eighths
+of the *local* daylight span, so Delhi's differ from Chennai's by 30–45 min.
+Every frame footers `medinijyotish.com · India · Delhi coordinates`, and the
+CTA card makes the caveat the call to action — an honesty requirement doing
+double duty as the funnel. Tithi/nakshatra/yoga are identical everywhere at a
+given instant, so the description says so explicitly.
+
+Other cities are `--lat/--lon/--place`, but **don't publish city variants to
+one channel** — near-identical videos read as repetitive and clutter the
+subscriber feed. Per-city belongs on the site, not in Shorts.
 
 **Safe area:** content lives between y=300 and y=1480 of 1080×1920. Instagram
 overlays the caption and action rail over roughly the bottom 22% and the top 14%;
@@ -112,11 +145,28 @@ If TTS fails, the renderer substitutes silence and still produces a valid mp4.
 That is deliberate: a silent short is recoverable, a crashed job at 5:30 AM is a
 gap in the upload streak.
 
+**Screen text and spoken text are generated separately.** The `en-IN` voice
+applies English spelling rules to Latin script, so raw values are mispronounced:
+"Karana" → "kaa-RAA-naa", "sunrise" → "suunreesee", "05:48" → "oh five forty
+eight". Two layers fix this, both narration-only:
+
+- `spoken()` in `panchang_short.py` — 24-hour times become "5:48 AM" / "5:25 PM
+  to 7:04 PM"; ISO dates become "9 August 2026". Hindi gets
+  "शाम 5 बजकर 25 मिनट" with the correct period word.
+- `respell()` in `deva_names.py` — 74 phonetic respellings ("Balava" →
+  "Baalav", "Abhijit Muhurat" → "Abhijeet Muhoort"). No-op for Devanagari,
+  since the Hindi voice reads देवनागरी natively.
+
+Frames keep the correct transliteration throughout. Printing "Baalav" on a card
+that claims classical accuracy would be self-defeating. Preview with
+`--say-only`; audition voices with `--voice`.
+
 ### 3.4 Fonts
 
 Devanagari needs both:
 
-1. A Devanagari font — `apt-get install fonts-noto-core fonts-noto-ui-core`
+1. A Devanagari font — `brew install --cask font-noto-sans-devanagari` on
+   macOS, `apt-get install fonts-noto-core fonts-noto-ui-core` on the runner
 2. **Pillow built with raqm** — without it, matras and conjuncts render in the
    wrong positions. This is subtle enough to ship broken. The renderer warns on
    both at startup; treat the warning as a build failure in CI.
@@ -196,7 +246,12 @@ jobs:
           IG_USER_ID:        ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN:   ${{ secrets.IG_ACCESS_TOKEN }}
           VM_SSH_KEY:        ${{ secrets.VM_SSH_KEY }}
-        run: python3 publish.py out/
+        run: |
+          for F in out/*.mp4; do
+            python3 publish_youtube.py upload "$F" \
+              --privacy public --channel @MediniJyotishEn
+          done
+          # Instagram publish goes here once App Review clears
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: shorts, path: out/, retention-days: 7 }
@@ -214,10 +269,27 @@ and unlimited on public. Not a constraint.
   ~100 units in the December 2025 revision, so the practical ceiling went from
   ~6 uploads/day to ~100. Three languages = ~300 units. Non-issue.
   The expensive call is now `search.list` (100 units) — don't put search in a loop.
+- **Scopes:** `youtube.upload` **and** `youtube` **and** `youtube.readonly`.
+  `youtube.upload` is insert-only — it cannot modify an existing video, so
+  privacy flips and metadata edits 403 without the `youtube` scope. Learned
+  the hard way; the scope must also be added in the Cloud consent screen, not
+  just in the code.
 - **Auth:** one-time OAuth consent per channel → store the **refresh token** as a
   repo secret. Refresh tokens for apps in *Testing* publishing status expire in
   7 days — push the Cloud Console app to *Published* (or add yourself as a test
-  user and accept re-consent, which you will forget to do).
+  user and accept re-consent, which you will forget to do). The OAuth client
+  must be of type **Desktop app**; a Web application client fails with
+  `redirect_uri_mismatch`.
+- **Channel guard:** every upload re-reads which channel the credentials
+  actually control and aborts on mismatch. One Google account owning both a
+  Hindi and an English channel makes mis-targeting easy, and **YouTube cannot
+  move a video between channels afterwards.**
+- **Editable after the fact:** title, description, tags and privacy, via
+  `publish_youtube.py update` (`videos.update`, ~50 units). Note it *replaces*
+  each part it is sent, so the command reads current values and overlays only
+  the changes. `--at` schedules a public release (private + `publishAt`).
+- **Not editable:** the video file itself. Bad render = delete and re-upload
+  under a new URL.
 - **Shorts classification** is automatic from aspect ratio (9:16) and duration
   (≤3 min). No `#Shorts` tag needed, though it does no harm.
 - **Category:** 22 (People & Blogs). 24 (Entertainment) also works; avoid 25 (News).
@@ -305,7 +377,10 @@ Ship this **after** the panchang track has run clean for two weeks.
 | Failure | Behaviour | Mitigation |
 |---------|-----------|------------|
 | API down / 5xx | No video | Retry ×3 with backoff; on final failure open a GitHub issue via API so it's visible |
-| Field renamed | Blank value on screen | `dig()` recursive fallback; assert all 5 limbs non-empty before encode |
+| Field renamed | Blank value on screen | ✅ `dig()`/`field()` fallback + `check()` aborts pre-encode, naming the missing fields |
+| Tithi rolled over before render | Wrong tithi announced | ✅ Anchored to sunrise + 2 min, not run time |
+| Tithi end solve doesn't converge | — | ✅ Returns `None`; the "until" line is omitted rather than guessed |
+| Wrong channel targeted | Unrecoverable | ✅ Channel guard aborts before upload |
 | edge-tts endpoint dead | Silent video | Falls back to silence, still publishes; alert to switch to Google TTS |
 | Missing Devanagari font | Tofu boxes | Startup warning → make it a hard CI failure |
 | No raqm | Misplaced matras | Startup warning; visually inspect the first Hindi render |
@@ -336,15 +411,19 @@ Effectively zero. The cost is your attention during the first two weeks.
 
 ## 11. Build order
 
-1. ~~Renderer~~ — done (`panchang_short.py`), verified against 2026-08-08 data
-2. **Start Meta App Review** — 2–4 week clock, start it first
-3. Fix the UTC/IST display bug on the SSR panchang page
-4. YouTube channel (English), OAuth refresh token — see `YOUTUBE_SETUP.md`
-5. ~~`publish_youtube.py`~~ — done; run it manually for a week
-6. Add nginx location for `/shorts/`; add IG publish path
-7. Enable the Actions cron; watch it for a week
-8. Hindi at day 30, Telugu at day 60
-9. Medini gochar track once panchang is stable
+1. ~~Renderer~~ — done, verified against live 2026-08-09 data
+2. ~~YouTube channel (English) + OAuth~~ — done, `@MediniJyotishEn` publishing
+3. ~~`publish_youtube.py`~~ — done, including in-place `update`
+4. **Start Meta App Review** ← longest clock, nothing depends on it, start now
+5. Fix the UTC/IST display bug on the SSR panchang pages
+6. Fix the Latin transliterations on `/hi/` (reuse `deva_names.py`)
+7. Run `./daily.sh` manually for a week — catch tithi rollovers, month
+   boundaries, pronunciation misses
+8. Add `tithi_end_utc` to the API; drop the client-side solver
+9. Add nginx location for `/shorts/`; add the IG publish path
+10. Enable the Actions cron; watch it for a week
+11. Hindi at day 30, Telugu at day 60
+12. Medini gochar track once panchang is stable
 
-Steps 2 and 3 are independent of everything else and unblock the longest waits.
-Do them first.
+Steps 4–6 are independent of everything else. Step 4 unblocks the longest wait;
+5 and 6 are live bugs every visitor can see.

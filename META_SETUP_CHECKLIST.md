@@ -1,9 +1,22 @@
 # Meta / Instagram Setup Checklist
 
-**Start this first.** App Review takes 2–4 weeks and everything else in the
-pipeline is faster than that. The code can wait; the clock cannot.
+**Status as of 2026-08-09: not started.** This is now the critical path —
+YouTube is live and publishing, so Instagram is the only thing left with a
+multi-week wait in front of it.
+
+> `README.md` — current state and design rationale
+> `YOUTUBE_SETUP.md` — the YouTube side, already working
+> `PIPELINE_SPEC.md` §7 — the Instagram publish API and how it slots in
+
+App Review takes 2–4 weeks and everything else in the pipeline is faster than
+that. The code can wait; the clock cannot.
 
 Total hands-on time: ~90 minutes across steps 1–8, then a wait.
+
+**The video is already Reels-ready.** The renderer outputs 1080×1920 H.264 +
+AAC and keeps content inside the overlay-safe band, so the same mp4 that goes
+to YouTube goes to Instagram unchanged. Nothing in the renderer needs to
+change — this checklist is purely account and approval work.
 
 ---
 
@@ -195,16 +208,29 @@ Instagram is stable — not before.
 
 ---
 
-## Parallel track — YouTube
+## Reference — YouTube setup (already complete)
 
-YouTube has no equivalent review wait, so it is not on the critical path. But
-one thing there *does* expire:
+**Done as of 2026-08-09.** Recorded here because the Meta flow has the same
+shape and the same class of traps.
 
-> OAuth apps left in **Testing** publishing status issue refresh tokens that
-> expire after **7 days**. Push the Cloud Console consent screen to
-> **Published** before you rely on the cron, or the job dies quietly a week in.
+- [x] Channel created — **Medini Jyotish English `@MediniJyotishEn`**
+- [x] Cloud project + YouTube Data API v3 enabled
+- [x] OAuth consent screen **Published** (Testing issues 7-day refresh tokens)
+- [x] OAuth client type **Desktop app** (a Web app client 400s with
+      `redirect_uri_mismatch`)
+- [x] Scopes: `youtube.upload` + `youtube` + `youtube.readonly`
+- [x] Credentials in `.medini/`, gitignored by directory and by filename
+- [ ] `YT_REFRESH_TOKEN` as a GitHub secret — only needed for the Actions cron
 
-- [ ] YouTube channel created (Hindi first)
-- [ ] Cloud project + Data API v3 enabled
-- [ ] OAuth consent screen set to **Published**
-- [ ] Refresh token stored as `YT_REFRESH_TOKEN`
+Three lessons that transfer directly to Meta:
+
+1. **Pick the right account/client type up front.** Desktop vs Web cost one
+   round trip on Google. Business vs Creator will cost you *weeks* here — a
+   Creator account cannot publish via the API at all, and you'd discover it
+   after the review wait.
+2. **Request every permission you will eventually need in the first
+   submission.** `youtube.upload` turned out to be insert-only, so changing a
+   video's privacy meant adding a scope and re-consenting. The Meta equivalent
+   is a second App Review.
+3. **Publishing status matters more than it looks.** Google silently expires
+   tokens for unpublished apps after 7 days; Meta gates on Development vs Live.

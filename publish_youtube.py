@@ -35,10 +35,16 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
-# youtube.upload alone cannot list existing videos, which is what the duplicate
-# guard needs. readonly is the cheapest way to get that.
+# Three distinct capabilities, three scopes:
+#   youtube.upload  — videos.insert. Does NOT permit modifying a video.
+#   youtube         — videos.update (privacy flips, metadata edits) and reads.
+#   youtube.readonly— kept so the duplicate-check still works if `youtube` is
+#                     ever narrowed.
+# Changing this list invalidates the stored token: delete .medini/yt_token.json
+# and re-run `auth`, and add the scope in the Cloud consent screen too.
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.readonly",
 ]
 

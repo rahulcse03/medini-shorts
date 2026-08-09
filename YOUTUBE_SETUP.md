@@ -1,5 +1,13 @@
 # YouTube Setup — English first, manual daily run
 
+> **Setup is complete as of 2026-08-09** — `@MediniJyotishEn` is live and
+> publishing. Keep this for the daily commands (§6), the troubleshooting table,
+> and §7 when you add Hindi.
+>
+> `README.md` — state, design decisions, gotchas
+> `PIPELINE_SPEC.md` — architecture and what's still unbuilt
+> `META_SETUP_CHECKLIST.md` — Instagram, the remaining critical path
+
 One-time setup is ~20 minutes. After that the daily run is one command.
 
 Starting in English removes the two fiddliest dependencies — the Devanagari
@@ -89,7 +97,12 @@ rather than failing, so look for the `[tts] fallback` warning.
 3. **OAuth consent screen:**
    - User type: **External**
    - App name: `Medini Jyotish Publisher`, support email: your medinijyotish2027 address
-   - Scopes: `.../auth/youtube.upload` and `.../auth/youtube.readonly`
+   - Scopes — all three:
+     `.../auth/youtube.upload` (insert),
+     `.../auth/youtube` (privacy flips and metadata edits),
+     `.../auth/youtube.readonly` (duplicate check).
+     `youtube.upload` alone cannot *modify* a video, so without `youtube`
+     the `update` command fails with `insufficientPermissions`.
    - **Publishing status → PUBLISH APP.** Do this now.
 
 > ⚠️ **The one that bites.** While the consent screen sits in *Testing*, Google
@@ -234,7 +247,7 @@ publish broken Hindi.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `invalid_grant` after ~7 days | Consent screen still in *Testing* | Publish the app, re-run `auth` |
-| `insufficientPermissions` | Missing `youtube.readonly` scope | Delete `.medini/yt_token.json`, re-run `auth` |
+| `insufficientPermissions` on `update` | Token predates the `youtube` write scope | Add the scope in the Cloud consent screen, then `rm .medini/yt_token.json` and re-run `auth` |
 | `CHANNEL MISMATCH` | Token points at the other channel | Switch active channel at youtube.com, then `rm .medini/yt_token.json && python3 publish_youtube.py auth --channel @MediniJyotishEn` |
 | Silent video | edge-tts unreachable | Falls back to silence by design; check for the `[tts] fallback` warning |
 | `quotaExceeded` | Something is looping | `videos.insert` is ~100 units of 10,000/day; check for a retry loop |
