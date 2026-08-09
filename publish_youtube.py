@@ -42,7 +42,30 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
 ]
 
-CONFIG_DIR = Path(os.environ.get("MEDINI_CONFIG", Path.home() / ".medini"))
+def _config_dir() -> Path:
+    """Where credentials live.
+
+    Default is `.medini/` beside this script, so the whole setup is one
+    portable folder. `.gitignore` excludes it both by directory and by
+    filename — keeping secrets inside a repo only works if the ignore rules
+    are airtight.
+
+    Falls back to the legacy ~/.medini if the local one hasn't been created
+    yet, so an existing install keeps working until the files are moved.
+    """
+    if os.environ.get("MEDINI_CONFIG"):
+        return Path(os.environ["MEDINI_CONFIG"]).expanduser()
+    local = Path(__file__).resolve().parent / ".medini"
+    legacy = Path.home() / ".medini"
+    if not (local / "client_secret.json").exists() and \
+            (legacy / "client_secret.json").exists():
+        print(f"  note: using legacy config at {legacy}\n"
+              f"        move it with:  mv {legacy} {local}", file=sys.stderr)
+        return legacy
+    return local
+
+
+CONFIG_DIR = _config_dir()
 TOKEN_PATH = CONFIG_DIR / "yt_token.json"
 SECRETS_PATH = CONFIG_DIR / "client_secret.json"
 CHANNEL_PATH = CONFIG_DIR / "yt_channel.json"

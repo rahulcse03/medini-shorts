@@ -13,10 +13,14 @@ __pycache__/
 *.pyc
 
 # Credentials — these must NEVER be committed.
-# The real ones live in ~/.medini/, but guard against a stray copy.
+# The whole config dir lives inside the repo folder, so ignore it wholesale
+# AND by filename: two independent guards, because a leaked OAuth client
+# secret means rotating credentials and re-authorising every channel.
+.medini/
 client_secret*.json
 yt_token.json
 yt_channel.json
+uploads.jsonl
 *.pem
 
 # macOS

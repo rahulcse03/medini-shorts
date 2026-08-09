@@ -102,10 +102,21 @@ rather than failing, so look for the `[tts] fallback` warning.
    Download the JSON.
 
 ```bash
-mkdir -p ~/.medini
-mv ~/Downloads/client_secret_*.json ~/.medini/client_secret.json
-chmod 600 ~/.medini/client_secret.json
+mkdir -p .medini
+mv ~/Downloads/client_secret_*.json .medini/client_secret.json
+chmod 600 .medini/client_secret.json
 ```
+
+> Credentials live in `.medini/` **inside** the project folder, so the whole
+> setup travels as one directory. `.gitignore` excludes it two ways — by
+> directory (`.medini/`) and by filename (`client_secret*.json`,
+> `yt_token.json`) — because a secret inside a repo is only ever one
+> `git add -f` from being published. Verify before your first push:
+>
+> ```bash
+> git check-ignore -v .medini/client_secret.json   # must print a rule
+> git status --porcelain | grep medini             # must print nothing
+> ```
 
 ---
 
@@ -122,7 +133,7 @@ python3 publish_youtube.py auth --channel @MediniJyotishEn
 
 With `--channel`, consent fails loudly if you picked the wrong one, instead of
 storing a token that quietly points at the Hindi channel. The handle is then
-saved to `~/.medini/yt_channel.json` and re-verified on every upload.
+saved to `.medini/yt_channel.json` and re-verified on every upload.
 
 The command prints the channel it authorised and the refresh token for later
 use as a GitHub secret — keep that out of the repo.
@@ -223,8 +234,8 @@ publish broken Hindi.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `invalid_grant` after ~7 days | Consent screen still in *Testing* | Publish the app, re-run `auth` |
-| `insufficientPermissions` | Missing `youtube.readonly` scope | Delete `~/.medini/yt_token.json`, re-run `auth` |
-| `CHANNEL MISMATCH` | Token points at the other channel | Switch active channel at youtube.com, then `rm ~/.medini/yt_token.json && python3 publish_youtube.py auth --channel @MediniJyotishEn` |
+| `insufficientPermissions` | Missing `youtube.readonly` scope | Delete `.medini/yt_token.json`, re-run `auth` |
+| `CHANNEL MISMATCH` | Token points at the other channel | Switch active channel at youtube.com, then `rm .medini/yt_token.json && python3 publish_youtube.py auth --channel @MediniJyotishEn` |
 | Silent video | edge-tts unreachable | Falls back to silence by design; check for the `[tts] fallback` warning |
 | `quotaExceeded` | Something is looping | `videos.insert` is ~100 units of 10,000/day; check for a retry loop |
 | Not tagged as a Short | Ratio or duration | Must be 9:16 and ≤3 min — renderer outputs 1080×1920 / ~25s. Reclassification can take minutes |
