@@ -1,0 +1,23 @@
+# Generated renders
+out/
+*.mp4
+*.mp3
+*.png
+
+# Metadata sidecars are regenerated on every run
+panchang_*.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Credentials — these must NEVER be committed.
+# The real ones live in ~/.medini/, but guard against a stray copy.
+client_secret*.json
+yt_token.json
+yt_channel.json
+*.pem
+
+# macOS
+.DS_Store
