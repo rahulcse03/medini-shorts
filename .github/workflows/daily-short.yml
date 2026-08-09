@@ -1,0 +1,127 @@
+name: daily-panchang-short
+
+# Renders the daily Panchang short and publishes it to YouTube.
+#
+# Runs off the VM by design: ffmpeg encoding on the e2-micro would recreate the
+# CPU spike that degrades the live API. See PIPELINE_SPEC.md §2 and §5.
+#
+# NOTE: GitHub disables a scheduled workflow after 60 days with no repo commits.
+# If this repo goes quiet, push any commit (or run it manually) to keep it live.
+
+on:
+  schedule:
+    # 00:00 UTC = 05:30 IST — before the 06:00 IST target, with margin for the
+    # 5–15 min jitter GitHub's scheduler can add. Rahu Kalam is only useful if
+    # the viewer sees it before planning their day.
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'YYYY-MM-DD (blank = today)'
+        required: false
+        default: ''
+      langs:
+        description: 'space-separated language codes'
+        required: false
+        default: 'en'
+      privacy:
+        description: 'public | unlisted | private'
+        required: false
+        default: 'public'
+
+# One run at a time; never let two publishers race.
+concurrency:
+  group: daily-short
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write        # to open an issue when a run fails
+
+jobs:
+  render-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: System deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Python deps
+        run: pip install pillow edge-tts google-api-python-client google-auth google-auth-oauthlib requests
+
+      - name: Render
+        run: |
+          set -euo pipefail
+          LANGS="${{ github.event.inputs.langs || 'en' }}"
+          DATE="${{ github.event.inputs.date }}"
+          mkdir -p out
+          first=1
+          for L in $LANGS; do
+            # Stagger languages: never hit the single API worker in parallel
+            # (PIPELINE_SPEC.md §2). First language pays the compute, rest cache.
+            [ "$first" -eq 1 ] || sleep 90
+            first=0
+            if [ -n "$DATE" ]; then
+              python3 panchang_short.py --lang "$L" --out out/ --date "$DATE"
+            else
+              python3 panchang_short.py --lang "$L" --out out/
+            fi
+          done
+
+      - name: Publish to YouTube
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+          PRIVACY="${{ github.event.inputs.privacy || 'public' }}"
+          shopt -s nullglob
+          published=0
+          for F in out/*.mp4; do
+            # upload has its own date-based duplicate guard (search.list), so a
+            # re-run of the same day is a no-op rather than a double post.
+            python3 publish_youtube.py upload "$F" \
+              --privacy "$PRIVACY" --channel "@MediniJyotishEn"
+            published=1
+          done
+          [ "$published" -eq 1 ] || { echo "No rendered mp4 to publish"; exit 1; }
+
+      - name: Upload rendered shorts as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shorts
+          path: out/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Open an issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const day = new Date().toISOString().slice(0, 10);
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Daily short failed — ${day}`,
+              body: [
+                'The `daily-panchang-short` workflow failed — no short was published today.',
+                '',
+                `Run log: ${run}`,
+                '',
+                'Common causes: edge-tts endpoint unreachable (falls back to silence, so',
+                'this is usually the YouTube step), an expired `YT_REFRESH_TOKEN`, or the',
+                'API being down. See README.md and PIPELINE_SPEC.md §9.',
+              ].join('\n'),
+            });
