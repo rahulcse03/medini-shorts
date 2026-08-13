@@ -84,13 +84,28 @@ jobs:
         run: |
           set -euo pipefail
           PRIVACY="${{ github.event.inputs.privacy || 'public' }}"
+
+          # On the daily cron, schedule the public release for the next 06:00 IST
+          # (00:30 UTC) — YouTube enforces the exact time, immune to cron jitter,
+          # and the 5→6 AM gap is a review buffer. Manual runs publish immediately
+          # per the privacy input, so `unlisted` test runs stay instant.
+          SCHEDULE_ARGS=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            NOW=$(date -u +%s)
+            T=$(date -u -d 'today 00:30' +%s)
+            [ "$T" -le "$NOW" ] && T=$(date -u -d 'tomorrow 00:30' +%s)
+            AT=$(date -u -d "@$T" +%Y-%m-%dT%H:%M:%SZ)
+            SCHEDULE_ARGS="--at $AT"
+            echo "Scheduling public release at $AT (06:00 IST)"
+          fi
+
           shopt -s nullglob
           published=0
           for F in out/*.mp4; do
-            # upload has its own date-based duplicate guard (search.list), so a
-            # re-run of the same day is a no-op rather than a double post.
+            # upload has its own date-based duplicate guard, so a re-run of the
+            # same day is a no-op rather than a double post.
             python3 publish_youtube.py upload "$F" \
-              --privacy "$PRIVACY" --channel "@MediniJyotishEn"
+              --privacy "$PRIVACY" --channel "@MediniJyotishEn" $SCHEDULE_ARGS
             published=1
           done
           [ "$published" -eq 1 ] || { echo "No rendered mp4 to publish"; exit 1; }

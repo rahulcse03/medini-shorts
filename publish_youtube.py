@@ -319,9 +319,19 @@ def cmd_upload(args):
         },
     }
 
+    # Scheduled release: YouTube requires the video be private and flips it
+    # public itself at publishAt. This nails an exact release time regardless of
+    # when the upload actually ran.
+    if args.at:
+        body["status"]["privacyStatus"] = "private"
+        body["status"]["publishAt"] = args.at
+
     print(f"  {video.name}  ({video.stat().st_size / 1e6:.1f} MB)")
     print(f"  title: {clean['title']}")
-    print(f"  privacy: {args.privacy}  lang: {lang}")
+    if args.at:
+        print(f"  privacy: private → public at {args.at}  lang: {lang}")
+    else:
+        print(f"  privacy: {args.privacy}  lang: {lang}")
 
     # Deliberately before auth: checking metadata shouldn't need credentials.
     if args.dry_run:
@@ -448,6 +458,10 @@ def main():
                          "(default: whatever `auth` recorded)")
     up.add_argument("--privacy", default="public",
                     choices=["public", "unlisted", "private"])
+    up.add_argument("--at", metavar="RFC3339",
+                    help="schedule public release at this instant (implies "
+                         "private until then), e.g. 2026-08-14T00:30:00Z "
+                         "(=06:00 IST). Overrides --privacy.")
     up.add_argument("--lang", help="BCP-47 code (default: inferred from filename)")
     up.add_argument("--marker", help="duplicate-check string (default: the date)")
     up.add_argument("--force", action="store_true", help="skip duplicate check")
