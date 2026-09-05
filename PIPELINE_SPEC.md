@@ -394,7 +394,7 @@ Ship this **after** the panchang track has run clean for two weeks.
 | No raqm | Misplaced matras | Startup warning; visually inspect the first Hindi render |
 | YouTube token expired | Upload 401 | Publish app to *Published* status; alert on 401 |
 | IG container never FINISHED | No post | Poll cap + alert; container expires in 24h anyway |
-| Duplicate post (re-run) | Two videos | Idempotency: check for an existing upload with the date in the title before inserting |
+| Duplicate post (re-run) | Two videos | Idempotency: before inserting, scan recent uploads for the ISO date in the title *or description* (the title carries a human date; the canonical URL in the description carries the ISO date). This is what makes the weekly workflow's twice-a-run gap-fill safe. |
 
 **Guardrail:** never auto-publish a video whose panchang values failed the
 non-empty assertion. A wrong Rahu Kalam is worse than a missed day — people act

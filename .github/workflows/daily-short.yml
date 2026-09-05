@@ -11,6 +11,13 @@ name: weekly-panchang-shorts
 # calculation, so rendering a future date is as correct as rendering today
 # (panchang_short.py anchors each date to *its own* sunrise).
 #
+# Fires TWICE, ~3h apart (see the two crons). Each run skips days already on the
+# channel and only renders/uploads the gaps, so the second run is a self-healing
+# safety net: if the first is delayed, partial, or dropped entirely, the second
+# completes the week. Both runs share one concurrency group and are idempotent,
+# so their order doesn't matter. The duplicate guard (publish_youtube.py) is
+# what makes this safe — do not weaken it.
+#
 # Runs off the VM by design: ffmpeg encoding on the e2-micro would recreate the
 # CPU spike that degrades the live API. See PIPELINE_SPEC.md §2 and §5.
 #
@@ -19,10 +26,10 @@ name: weekly-panchang-shorts
 
 on:
   schedule:
-    # Sat 19:30 UTC = Sun 01:00 IST (IST is UTC+5:30; cron's day-of-week is UTC,
-    # so Sunday 01:00 IST falls on Saturday's UTC date). Renders the coming
-    # week Sun→Sat; even hours of scheduler drift leave a large release buffer.
+    # Sat 19:30 UTC = Sun 01:00 IST — render the coming week Sun→Sat.
     - cron: '30 19 * * 6'
+    # Sat 22:30 UTC = Sun 04:00 IST — gap-fill anything the first run missed.
+    - cron: '30 22 * * 6'
   workflow_dispatch:
     inputs:
       date:
@@ -42,7 +49,9 @@ on:
         required: false
         default: 'public'
 
-# One run at a time; never let two publishers race.
+# One run at a time; never let two publishers race. The two crons (and any
+# manual run) serialize through this group, so the later one always sees the
+# earlier one's uploads and fills only the gaps.
 concurrency:
   group: panchang-shorts
   cancel-in-progress: false
@@ -54,7 +63,7 @@ permissions:
 jobs:
   render-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 60      # 7 renders + 90s staggers between them
+    timeout-minutes: 60      # up to 7 renders + 90s staggers between them
     steps:
       - uses: actions/checkout@v4
 
@@ -70,21 +79,39 @@ jobs:
       - name: Python deps
         run: pip install pillow edge-tts google-api-python-client google-auth google-auth-oauthlib requests
 
-      - name: Render the week
+      - name: Render the week (skip days already published)
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
         run: |
           set -euo pipefail
           LANGS="${{ github.event.inputs.langs || 'en' }}"
           DAYS="${{ github.event.inputs.days || '7' }}"
+          PRIVACY="${{ github.event.inputs.privacy || 'public' }}"
           BASE="${{ github.event.inputs.date }}"
+          CH="@MediniJyotishEn"
           # Anchor the week to the IST calendar day, not the runner's UTC clock
           # or GitHub's (often hours-late) fire time. Every date is pinned
           # explicitly with --date, so the render is fully deterministic.
           [ -n "$BASE" ] || BASE=$(TZ='Asia/Kolkata' date +%F)
-          echo "Rendering $DAYS day(s) from $BASE (IST), langs: $LANGS"
+          echo "Rendering up to $DAYS day(s) from $BASE (IST), langs: $LANGS"
           mkdir -p out
           first=1
           for i in $(seq 0 $((DAYS - 1))); do
             D=$(date -u -d "$BASE +$i day" +%F)
+            # Gap-filling: skip a day already on the channel so the second run
+            # only does the work the first one missed, and never re-hits the
+            # single API worker for a short that already exists. `exists` exits
+            # 0 when present, 3 when absent. Date-level (fine for the single-lang
+            # default); a multi-lang setup would need a lang-aware marker. Only
+            # public runs consult the channel — unlisted/private test runs always
+            # render so you can eyeball the output.
+            if [ "$PRIVACY" = "public" ] \
+               && python3 publish_youtube.py exists "$D" --channel "$CH" >/dev/null 2>&1; then
+              echo "--- skip $D (already on channel) ---"
+              continue
+            fi
             for L in $LANGS; do
               # Stagger every render: never hit the single API worker in a burst
               # (PIPELINE_SPEC.md §2). Sequential + spaced keeps the live API calm.
@@ -105,6 +132,17 @@ jobs:
           PRIVACY="${{ github.event.inputs.privacy || 'public' }}"
           NOW=$(date -u +%s)
 
+          # An empty out/ here means the render step skipped every day because
+          # they are all already on the channel — that is the gap-filler doing
+          # its job, not a failure. (A real render failure aborts the job before
+          # this step under `set -e`.)
+          shopt -s nullglob
+          files=(out/*.mp4)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "Nothing to publish — every requested day is already on the channel."
+            exit 0
+          fi
+
           # Each rendered file is panchang_<YYYY-MM-DD>_<lang>.mp4. A public
           # upload is scheduled to flip public at 06:00 IST (00:30 UTC) of its
           # OWN date — derived from the filename, so every day in the batch gets
@@ -113,9 +151,7 @@ jobs:
           # backfill), publish it immediately — still the correct day, and
           # YouTube rejects a publishAt in the past. unlisted/private runs skip
           # scheduling and upload at that privacy now (handy for test runs).
-          shopt -s nullglob
-          published=0
-          for F in out/*.mp4; do
+          for F in "${files[@]}"; do
             FDATE=$(basename "$F" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
             ARGS=""
             if [ "$PRIVACY" = "public" ] && [ -n "$FDATE" ]; then
@@ -128,13 +164,11 @@ jobs:
                 echo "$(basename "$F") -> 06:00 IST $FDATE passed; publishing now"
               fi
             fi
-            # upload has its own date-based duplicate guard, so re-running the
-            # week is a per-day no-op rather than a double post.
+            # upload has its own date-based duplicate guard (belt-and-suspenders
+            # behind the render-step skip), so a re-run is a per-day no-op.
             python3 publish_youtube.py upload "$F" \
               --privacy "$PRIVACY" --channel "@MediniJyotishEn" $ARGS
-            published=1
           done
-          [ "$published" -eq 1 ] || { echo "No rendered mp4 to publish"; exit 1; }
 
       - name: Upload rendered shorts as artifacts
         if: always()
@@ -158,9 +192,10 @@ jobs:
               title: `Weekly shorts failed — ${day}`,
               body: [
                 'The `weekly-panchang-shorts` workflow failed — the week may be',
-                'incomplete. Some days in the batch may have uploaded before the',
-                'failure; check the channel and re-run (per-day duplicate guard',
-                'makes a re-run safe).',
+                'incomplete. Some days may have uploaded before the failure; the',
+                '~3h-later second run gap-fills automatically, and a manual re-run',
+                'is safe (per-day duplicate guard). Check the channel if both runs',
+                'fail.',
                 '',
                 `Run log: ${run}`,
                 '',

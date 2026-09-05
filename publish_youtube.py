@@ -46,6 +46,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.readonly",
+    # force-ssl is required to insert/list caption tracks (captions.insert).
+    "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
 def _config_dir() -> Path:
@@ -245,14 +247,22 @@ def already_uploaded(yt, uploads: str, marker: str) -> str | None:
     """Cheap duplicate guard: scan the channel's recent uploads for the date.
 
     Costs 1 quota unit vs 100 for a wasted re-upload, and more importantly
-    stops a re-run from putting two identical panchangs on the channel.
+    stops a re-run from putting two identical panchangs on the channel — the
+    basis for the weekly workflow's twice-a-run, gap-filling safety net.
+
+    The marker is the ISO date (YYYY-MM-DD). Titles are SEO-tuned and carry a
+    *human* date ("6 September 2026"), so match against title AND description:
+    every description embeds the canonical URL (…/panchang/YYYY-MM-DD), which
+    carries the ISO date verbatim. Matching title-only silently never fires.
     """
     try:
         items = yt.playlistItems().list(
-            part="snippet", playlistId=uploads, maxResults=25).execute()
+            part="snippet", playlistId=uploads, maxResults=50).execute()
         for it in items.get("items", []):
-            if marker in it["snippet"]["title"]:
-                return it["snippet"]["resourceId"]["videoId"]
+            sn = it["snippet"]
+            hay = f"{sn.get('title', '')}\n{sn.get('description', '')}"
+            if marker in hay:
+                return sn["resourceId"]["videoId"]
     except HttpError as e:
         print(f"  duplicate check skipped ({e.status_code})", file=sys.stderr)
     return None
@@ -375,6 +385,27 @@ def cmd_upload(args):
                             "file": video.name, "title": clean["title"]}) + "\n")
 
 
+def cmd_exists(args):
+    """Is a short for MARKER (a date) already on the channel? Prints the video
+    id and exits 0 if so; exits 3 if not. Lets the weekly workflow skip
+    re-rendering days it already published, so the second, gap-filling run only
+    does the work that actually failed. Exit 3 (not 1/2) keeps "absent" distinct
+    from a usage or runtime error, so a real failure isn't read as "absent".
+    """
+    creds = load_credentials(interactive=False)
+    yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
+    ch = get_channel(yt)
+    expected = args.channel or os.environ.get("YT_CHANNEL")
+    if not expected and CHANNEL_PATH.exists():
+        expected = json.loads(CHANNEL_PATH.read_text()).get("handle") or None
+    assert_channel(ch, expected)
+    vid = already_uploaded(yt, ch["uploads"], args.marker)
+    if vid:
+        print(vid)
+        return
+    sys.exit(3)
+
+
 # --------------------------------------------------------------------------
 
 def latest_video(yt, uploads: str) -> tuple[str, str] | None:
@@ -443,6 +474,20 @@ def cmd_update(args):
     print(f"  updated https://youtu.be/{video_id}")
 
 
+def cmd_captions(args):
+    """Upload a subtitle file (.srt/.vtt) as a caption track. Needs the
+    youtube.force-ssl scope — re-run `auth` if you added it after first consent."""
+    creds = load_credentials(interactive=False)
+    yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
+    media = MediaFileUpload(args.file)
+    yt.captions().insert(
+        part="snippet",
+        body={"snippet": {"videoId": args.video_id, "language": args.language,
+                          "name": args.name, "isDraft": False}},
+        media_body=media).execute()
+    print(f"  captions ({args.language}) uploaded to https://youtu.be/{args.video_id}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Upload a Medini Jyotish short.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -469,6 +514,13 @@ def main():
                     help="print the request body, upload nothing")
     up.set_defaults(fn=cmd_upload)
 
+    ex = sub.add_parser("exists",
+                        help="check if a date is already on the channel "
+                             "(prints id + exit 0 if present, exit 3 if absent)")
+    ex.add_argument("marker", help="date string to look for, e.g. 2026-09-06")
+    ex.add_argument("--channel", help="required handle, e.g. @MediniJyotishEn")
+    ex.set_defaults(fn=cmd_exists)
+
     ud = sub.add_parser("update", help="change privacy/metadata on an existing video")
     ud.add_argument("video_id", nargs="?", default="latest",
                     help="video id, or 'latest' (default)")
@@ -481,6 +533,13 @@ def main():
                          ".json sidecar")
     ud.add_argument("--channel", help="required handle, e.g. @MediniJyotishEn")
     ud.set_defaults(fn=cmd_update)
+
+    cp = sub.add_parser("captions", help="upload a subtitle file (.srt/.vtt) to a video")
+    cp.add_argument("video_id")
+    cp.add_argument("file")
+    cp.add_argument("--language", default="en")
+    cp.add_argument("--name", default="English")
+    cp.set_defaults(fn=cmd_captions)
 
     args = ap.parse_args()
     args.fn(args)
