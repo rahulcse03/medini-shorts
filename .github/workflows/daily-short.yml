@@ -62,6 +62,13 @@ jobs:
           set -euo pipefail
           LANGS="${{ github.event.inputs.langs || 'en' }}"
           DATE="${{ github.event.inputs.date }}"
+          # Anchor to the IST calendar day, not the runner's UTC clock or
+          # GitHub's (often hours-late) fire time. Pinning the date makes the
+          # render deterministic and lets the publish step target the same day,
+          # so cron jitter can never render one day and release another.
+          [ -n "$DATE" ] || DATE=$(TZ='Asia/Kolkata' date +%F)
+          echo "DATE=$DATE" >> "$GITHUB_ENV"
+          echo "Rendering for $DATE (IST)"
           mkdir -p out
           first=1
           for L in $LANGS; do
@@ -69,11 +76,7 @@ jobs:
             # (PIPELINE_SPEC.md §2). First language pays the compute, rest cache.
             [ "$first" -eq 1 ] || sleep 90
             first=0
-            if [ -n "$DATE" ]; then
-              python3 panchang_short.py --lang "$L" --out out/ --date "$DATE"
-            else
-              python3 panchang_short.py --lang "$L" --out out/
-            fi
+            python3 panchang_short.py --lang "$L" --out out/ --date "$DATE"
           done
 
       - name: Publish to YouTube
@@ -85,18 +88,24 @@ jobs:
           set -euo pipefail
           PRIVACY="${{ github.event.inputs.privacy || 'public' }}"
 
-          # On the daily cron, schedule the public release for the next 06:00 IST
-          # (00:30 UTC) — YouTube enforces the exact time, immune to cron jitter,
-          # and the 5→6 AM gap is a review buffer. Manual runs publish immediately
-          # per the privacy input, so `unlisted` test runs stay instant.
+          # On the daily cron, release publicly at 06:00 IST (00:30 UTC) of the
+          # render's OWN day ($DATE) — derived from that date, not from "now",
+          # so GitHub's cron jitter can't slip the release onto the wrong day.
+          # YouTube enforces the exact publishAt, and the 5→6 AM gap is a review
+          # buffer. If the run already drifted past 06:00 IST, that buffer is
+          # gone: publish immediately (still the correct day) rather than
+          # scheduling tomorrow. Manual runs publish per the privacy input.
           SCHEDULE_ARGS=""
           if [ "${{ github.event_name }}" = "schedule" ]; then
             NOW=$(date -u +%s)
-            T=$(date -u -d 'today 00:30' +%s)
-            [ "$T" -le "$NOW" ] && T=$(date -u -d 'tomorrow 00:30' +%s)
-            AT=$(date -u -d "@$T" +%Y-%m-%dT%H:%M:%SZ)
-            SCHEDULE_ARGS="--at $AT"
-            echo "Scheduling public release at $AT (06:00 IST)"
+            T=$(date -u -d "${DATE}T00:30:00Z" +%s)
+            if [ "$T" -gt "$NOW" ]; then
+              AT=$(date -u -d "@$T" +%Y-%m-%dT%H:%M:%SZ)
+              SCHEDULE_ARGS="--at $AT"
+              echo "Scheduling public release at $AT (06:00 IST $DATE)"
+            else
+              echo "06:00 IST $DATE already passed (late run) — publishing immediately"
+            fi
           fi
 
           shopt -s nullglob
