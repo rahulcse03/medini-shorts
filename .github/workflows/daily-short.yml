@@ -1,6 +1,15 @@
-name: daily-panchang-short
+name: weekly-panchang-shorts
 
-# Renders the daily Panchang short and publishes it to YouTube.
+# Renders a full week of Panchang shorts in one run and uploads them to YouTube,
+# each scheduled to go public at 06:00 IST on its own day.
+#
+# Why weekly instead of a 05:00-daily cron: GitHub's `schedule` trigger is
+# best-effort and routinely fires hours late (and occasionally skips a day), so
+# a same-morning render kept missing the 05:00 window. A weekly batch has days
+# of slack — cron jitter no longer matters — and YouTube's `publishAt` still
+# releases each short at exactly 06:00 IST. Panchang is a pure astronomical
+# calculation, so rendering a future date is as correct as rendering today
+# (panchang_short.py anchors each date to *its own* sunrise).
 #
 # Runs off the VM by design: ffmpeg encoding on the e2-micro would recreate the
 # CPU spike that degrades the live API. See PIPELINE_SPEC.md §2 and §5.
@@ -10,28 +19,32 @@ name: daily-panchang-short
 
 on:
   schedule:
-    # 23:30 UTC = 05:00 IST (IST is UTC+5:30, so the prior UTC day). Early enough
-    # to be up before the morning window, with margin for the 5–15 min jitter
-    # GitHub's scheduler can add. Rahu Kalam is only useful seen before the day.
-    - cron: '30 23 * * *'
+    # Sat 19:30 UTC = Sun 01:00 IST (IST is UTC+5:30; cron's day-of-week is UTC,
+    # so Sunday 01:00 IST falls on Saturday's UTC date). Renders the coming
+    # week Sun→Sat; even hours of scheduler drift leave a large release buffer.
+    - cron: '30 19 * * 6'
   workflow_dispatch:
     inputs:
       date:
-        description: 'YYYY-MM-DD (blank = today)'
+        description: 'week start YYYY-MM-DD (blank = today IST)'
         required: false
         default: ''
+      days:
+        description: 'how many days to render from the start date'
+        required: false
+        default: '7'
       langs:
         description: 'space-separated language codes'
         required: false
         default: 'en'
       privacy:
-        description: 'public | unlisted | private'
+        description: 'public (schedule each at 06:00 IST) | unlisted | private'
         required: false
         default: 'public'
 
 # One run at a time; never let two publishers race.
 concurrency:
-  group: daily-short
+  group: panchang-shorts
   cancel-in-progress: false
 
 permissions:
@@ -41,7 +54,7 @@ permissions:
 jobs:
   render-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60      # 7 renders + 90s staggers between them
     steps:
       - uses: actions/checkout@v4
 
@@ -57,26 +70,29 @@ jobs:
       - name: Python deps
         run: pip install pillow edge-tts google-api-python-client google-auth google-auth-oauthlib requests
 
-      - name: Render
+      - name: Render the week
         run: |
           set -euo pipefail
           LANGS="${{ github.event.inputs.langs || 'en' }}"
-          DATE="${{ github.event.inputs.date }}"
-          # Anchor to the IST calendar day, not the runner's UTC clock or
-          # GitHub's (often hours-late) fire time. Pinning the date makes the
-          # render deterministic and lets the publish step target the same day,
-          # so cron jitter can never render one day and release another.
-          [ -n "$DATE" ] || DATE=$(TZ='Asia/Kolkata' date +%F)
-          echo "DATE=$DATE" >> "$GITHUB_ENV"
-          echo "Rendering for $DATE (IST)"
+          DAYS="${{ github.event.inputs.days || '7' }}"
+          BASE="${{ github.event.inputs.date }}"
+          # Anchor the week to the IST calendar day, not the runner's UTC clock
+          # or GitHub's (often hours-late) fire time. Every date is pinned
+          # explicitly with --date, so the render is fully deterministic.
+          [ -n "$BASE" ] || BASE=$(TZ='Asia/Kolkata' date +%F)
+          echo "Rendering $DAYS day(s) from $BASE (IST), langs: $LANGS"
           mkdir -p out
           first=1
-          for L in $LANGS; do
-            # Stagger languages: never hit the single API worker in parallel
-            # (PIPELINE_SPEC.md §2). First language pays the compute, rest cache.
-            [ "$first" -eq 1 ] || sleep 90
-            first=0
-            python3 panchang_short.py --lang "$L" --out out/ --date "$DATE"
+          for i in $(seq 0 $((DAYS - 1))); do
+            D=$(date -u -d "$BASE +$i day" +%F)
+            for L in $LANGS; do
+              # Stagger every render: never hit the single API worker in a burst
+              # (PIPELINE_SPEC.md §2). Sequential + spaced keeps the live API calm.
+              [ "$first" -eq 1 ] || sleep 90
+              first=0
+              echo "--- render $D ($L) ---"
+              python3 panchang_short.py --lang "$L" --out out/ --date "$D"
+            done
           done
 
       - name: Publish to YouTube
@@ -87,34 +103,35 @@ jobs:
         run: |
           set -euo pipefail
           PRIVACY="${{ github.event.inputs.privacy || 'public' }}"
+          NOW=$(date -u +%s)
 
-          # On the daily cron, release publicly at 06:00 IST (00:30 UTC) of the
-          # render's OWN day ($DATE) — derived from that date, not from "now",
-          # so GitHub's cron jitter can't slip the release onto the wrong day.
-          # YouTube enforces the exact publishAt, and the 5→6 AM gap is a review
-          # buffer. If the run already drifted past 06:00 IST, that buffer is
-          # gone: publish immediately (still the correct day) rather than
-          # scheduling tomorrow. Manual runs publish per the privacy input.
-          SCHEDULE_ARGS=""
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            NOW=$(date -u +%s)
-            T=$(date -u -d "${DATE}T00:30:00Z" +%s)
-            if [ "$T" -gt "$NOW" ]; then
-              AT=$(date -u -d "@$T" +%Y-%m-%dT%H:%M:%SZ)
-              SCHEDULE_ARGS="--at $AT"
-              echo "Scheduling public release at $AT (06:00 IST $DATE)"
-            else
-              echo "06:00 IST $DATE already passed (late run) — publishing immediately"
-            fi
-          fi
-
+          # Each rendered file is panchang_<YYYY-MM-DD>_<lang>.mp4. A public
+          # upload is scheduled to flip public at 06:00 IST (00:30 UTC) of its
+          # OWN date — derived from the filename, so every day in the batch gets
+          # its correct release time and cron jitter can't slip it. If a day's
+          # 06:00 IST is already in the past (a run that landed very late, or a
+          # backfill), publish it immediately — still the correct day, and
+          # YouTube rejects a publishAt in the past. unlisted/private runs skip
+          # scheduling and upload at that privacy now (handy for test runs).
           shopt -s nullglob
           published=0
           for F in out/*.mp4; do
-            # upload has its own date-based duplicate guard, so a re-run of the
-            # same day is a no-op rather than a double post.
+            FDATE=$(basename "$F" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+            ARGS=""
+            if [ "$PRIVACY" = "public" ] && [ -n "$FDATE" ]; then
+              T=$(date -u -d "${FDATE}T00:30:00Z" +%s)
+              if [ "$T" -gt "$NOW" ]; then
+                AT=$(date -u -d "@$T" +%Y-%m-%dT%H:%M:%SZ)
+                ARGS="--at $AT"
+                echo "$(basename "$F") -> public at $AT (06:00 IST $FDATE)"
+              else
+                echo "$(basename "$F") -> 06:00 IST $FDATE passed; publishing now"
+              fi
+            fi
+            # upload has its own date-based duplicate guard, so re-running the
+            # week is a per-day no-op rather than a double post.
             python3 publish_youtube.py upload "$F" \
-              --privacy "$PRIVACY" --channel "@MediniJyotishEn" $SCHEDULE_ARGS
+              --privacy "$PRIVACY" --channel "@MediniJyotishEn" $ARGS
             published=1
           done
           [ "$published" -eq 1 ] || { echo "No rendered mp4 to publish"; exit 1; }
@@ -138,9 +155,12 @@ jobs:
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Daily short failed — ${day}`,
+              title: `Weekly shorts failed — ${day}`,
               body: [
-                'The `daily-panchang-short` workflow failed — no short was published today.',
+                'The `weekly-panchang-shorts` workflow failed — the week may be',
+                'incomplete. Some days in the batch may have uploaded before the',
+                'failure; check the channel and re-run (per-day duplicate guard',
+                'makes a re-run safe).',
                 '',
                 `Run log: ${run}`,
                 '',

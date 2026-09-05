@@ -202,21 +202,29 @@ watermarked version — render once, upload the clean file to both.
 
 ## 5. Scheduling
 
-GitHub Actions cron is **UTC**. For a 06:00 IST post: `30 0 * * *`.
+GitHub Actions cron is **UTC** *and* best-effort: scheduled runs routinely fire
+hours late and occasionally skip a day, so a same-morning render kept missing
+its window. We instead render a **whole week in one run** and let YouTube's
+`publishAt` release each short at 06:00 IST on its own day — a weekly batch has
+days of slack, so cron jitter no longer matters. Panchang is a pure
+astronomical calculation, so a future date renders as correctly as today
+(each date is anchored to its own sunrise; see §3).
 
-Post before the audience needs the information, not after. Rahu Kalam is only
-useful if you see it before you plan your day.
+Cron `30 19 * * 6` = Sat 19:30 UTC = **Sun 01:00 IST** (cron's day-of-week is
+UTC, so Sunday-IST lands on Saturday's UTC date). Post before the audience
+needs the information, not after — Rahu Kalam is only useful seen beforehand.
 
 ```yaml
-# .github/workflows/daily-short.yml
-name: daily-panchang-short
+# .github/workflows/daily-short.yml  (filename kept for run-history continuity)
+name: weekly-panchang-shorts
 on:
   schedule:
-    - cron: '30 0 * * *'        # 06:00 IST
+    - cron: '30 19 * * 6'      # Sat 19:30 UTC = Sun 01:00 IST; renders Sun→Sat
   workflow_dispatch:
     inputs:
-      date:  { description: 'YYYY-MM-DD (blank = today)', required: false }
-      langs: { description: 'space-separated', default: 'hi' }
+      date:  { description: 'week start YYYY-MM-DD (blank = today IST)', required: false }
+      days:  { description: 'how many days to render', default: '7' }
+      langs: { description: 'space-separated', default: 'en' }
 
 jobs:
   render:
