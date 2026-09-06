@@ -96,6 +96,15 @@ def load_credentials(interactive: bool) -> Credentials:
     creds: Credentials | None = None
 
     # CI path: refresh token supplied via env, no browser available.
+    #
+    # Deliberately DO NOT pass scopes=SCOPES here. A refresh token already
+    # carries the scopes it was consented to; re-requesting a specific set on
+    # refresh makes Google reject the grant with `invalid_scope` the moment
+    # SCOPES lists anything the token predates (e.g. youtube.force-ssl, added
+    # for captions long after this token was minted). Omitting scopes refreshes
+    # against whatever the token was actually granted, so the pipeline survives
+    # scope additions without a re-auth. Re-auth (and a new secret) is only
+    # needed to *use* a newly-added scope, not to keep existing ones working.
     if os.environ.get("YT_REFRESH_TOKEN"):
         creds = Credentials(
             token=None,
@@ -103,7 +112,6 @@ def load_credentials(interactive: bool) -> Credentials:
             client_id=os.environ["YT_CLIENT_ID"],
             client_secret=os.environ["YT_CLIENT_SECRET"],
             token_uri="https://oauth2.googleapis.com/token",
-            scopes=SCOPES,
         )
         creds.refresh(Request())
         return creds
